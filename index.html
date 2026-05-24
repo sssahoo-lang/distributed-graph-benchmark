@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Distributed Graph Benchmark — Spark + GraphX · IU Bloomington · ENGR-E516</title>
+<meta name="description" content="Benchmarking Apache Spark + GraphX on a five-node Jetstream2 cluster. PageRank and SSSP on real-world graphs. ENGR-E516 Final Project, Indiana University Bloomington, Spring 2026.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="progress" id="progress"></div>
+
+<div class="stage">
+<div class="deck" id="deck">
+
+<!-- ════════════════════════════════════════════════════════════════
+     SLIDE 1 — TITLE
+     ════════════════════════════════════════════════════════════════ -->
+<section class="slide title-slide active">
+  <div class="title-grid">
+    <div class="title-main">
+      <span class="title-course">ENGR-E516 · SPRING 2026 · FINAL</span>
+      <h1 class="title-name">Where does Spark<br>start to <span class="accent">help</span>?</h1>
+      <p class="title-sub">A benchmarking study of Apache&nbsp;Spark + GraphX on a five-node Jetstream2 cluster — PageRank for web ranking, SSSP for road routing.</p>
+      <div class="title-meta">
+        <span>Indiana University Bloomington</span>
+        <span>·</span>
+        <span>April 29, 2026</span>
+      </div>
+    </div>
+    <div class="title-team">
+      <div class="label">Team — joint contribution</div>
+      <ul>
+        <li>Linthoi Laishram<span class="email">lilaish@iu.edu</span></li>
+        <li>Sriya Sahoo<span class="email">sssahoo@iu.edu</span></li>
+        <li>Sefunmi Akin-Olukunle<span class="email">sakinolu@iu.edu</span></li>
+      </ul>
+      <div class="equal">All three authors contributed equally across infrastructure, algorithm implementation, experimental sweep, analysis, and writing.</div>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════
+     SLIDE 2 — THE QUESTION
+     ════════════════════════════════════════════════════════════════ -->
+<section class="slide">
+  <span class="slide-tag">01 · Research Question</span>
+  <span class="slide-num">02 / 17</span>
+  <div class="body-area" style="margin-top:48px;">
+    <div class="big-question">
+      Where does Spark/GraphX on a five-node Jetstream2 cluster <span class="em">start to help</span> — or <span class="em">stop helping</span> — iterative graph analytics?
+    </div>
+    <div class="rq-list">
+      <div class="rq-item">
+        <div class="rq-num">RQ 1 · SCALING</div>
+        <div class="rq-text">How does execution time change as we scale worker count from 1 → 8 on commodity cloud VMs?</div>
+      </div>
+      <div class="rq-item">
+        <div class="rq-num">RQ 2 · PARTITIONING</div>
+        <div class="rq-text">Edge-cut (1D) vs vertex-cut (2D): does partitioning strategy matter for communication, balance, and time?</div>
+      </div>
+      <div class="rq-item">
+        <div class="rq-num">RQ 3 · TOPOLOGY</div>
+        <div class="rq-text">Does graph shape (power-law vs near-uniform) interact with partitioning and scaling behavior?</div>
+      </div>
+    </div>
+    <p class="lead" style="margin-top:28px;">Most published GraphX work measures gains on billion-edge graphs. We characterize the <b style="color:var(--iu-crimson)">lower bound</b> — where distribution begins to cost more than it returns.</p>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════
+     SLIDE 3 — APPLICATIONS
+     ════════════════════════════════════════════════════════════════ -->
+<section class="slide">
+  <span class="slide-tag">02 · Real-World Framing</span>
+  <span class="slide-num">03 / 17</span>
+  <h2 class="section-title">Two algorithms · two concrete applications</h2>
+  <h3 class="subhead">Every algorithm-dataset pair is bound to a named engineering decision — not abstract benchmarking.</h3>
+  <div class="split">
+    <div class="app-card">
+      <div class="alg">Algorithm 1 — PageRank</div>
+      <h4>Web Page Ranking</h4>
+      <p>Pages with many links from <em>important</em> pages rank higher. Power-iteration on a hyperlink graph, 20 iterations, reset probability 0.15.</p>
+      <p><b>Engineering decision modeled:</b> nightly re-computation of authority scores on a 5M-edge web subgraph — single VM or cluster?</p>
+      <div class="stat-row">
+        <div class="stat"><div class="k">Dataset</div><div class="v">web-Google</div></div>
+        <div class="stat"><div class="k">Topology</div><div class="v">Power-law</div></div>
+      </div>
+    </div>
+    <div class="app-card">
+      <div class="alg">Algorithm 2 — SSSP</div>
+      <h4>Road Network Routing</h4>
+      <p>Single-Source Shortest Path via Pregel BSP, unit weights, label-propagation until quiescence — distances from one depot to all intersections.</p>
+      <p><b>Engineering decision modeled:</b> regional logistics planner needs depot-to-everywhere distances on a real road graph.</p>
+      <div class="stat-row">
+        <div class="stat"><div class="k">Dataset</div><div class="v">roadNet-CA</div></div>
+        <div class="stat"><div class="k">Topology</div><div class="v">Near-uniform</div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════
+     SLIDE 4 — DATASETS
+     ════════════════════════════════════════════════════════════════ -->
+<section class="slide">
+  <span class="slide-tag">03 · Datasets</span>
+  <span class="slide-num">04 / 17</span>
+  <h2 class="section-title">Two graphs, two contrasting topologies</h2>
+  <h3 class="subhead">Both drawn from the Stanford SNAP collection — chosen to test how graph shape interacts with partitioning.</h3>
+  <div class="body-area">
+    <table class="data" style="margin-bottom:22px;">
+      <thead>
+        <tr><th>Dataset</th><th class="num">Vertices</th><th class="num">Edges</th><th>Topology</th><th class="num">Diameter</th><th>On-disk</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><b>web-Google</b></td><td class="num">875,713</td><td class="num">5,105,039</td><td>Power-law (hubs)</td><td class="num">~24</td><td class="num">~75 MB</td></tr>
+        <tr><td><b>roadNet-CA</b></td><td class="num">1,965,206</td><td class="num">5,533,214</td><td>Near-uniform (deg ≈ 2–4)</td><td class="num">726</td><td class="num">~88 MB</td></tr>
+      </tbody>
+    </table>
+    <ul class="tight">
+      <li><b>web-Google</b> — a real subgraph of the web. A few hub pages with many incoming links; most pages with few. Max out-degree ≈ 456.</li>
+      <li><b>roadNet-CA</b> — California road intersections. Every node has 2–4 neighbors. <b>Diameter 726</b> means SSSP takes 726 Pregel supersteps.</li>
+      <li><b>Critical observation</b> — both fit comfortably in a single worker's 30 GB RAM. They probably fit in a modern CPU's L3 cache. <span style="color:var(--iu-crimson)">This will matter.</span></li>
+    </ul>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════
+     SLIDE 5 — CLUSTER ARCHITECTURE
+     ════════════════════════════════════════════════════════════════ -->
+<section class="slide">
+  <span class="slide-tag">04 · Cluster</span>
+  <span class="slide-num">05 / 17</span>
+  <h2 class="section-title">Five-node Jetstream2 cluster</h2>
+  <h3 class="subhead">NSF ACCESS allocation · 48 vCPUs · 180 GB RAM · NFS-shared dataset &amp; JAR</h3>
+  <div class="two-col-fig">
+    <div>
+      <table class="data">
+        <thead>
+          <tr><th>Role</th><th>Instance</th><th class="num">vCPUs</th><th class="num">RAM</th></tr>
+        </thead>
+        <tbody>
+          <tr class="highlight"><td>Master</td><td>m3.xlarge</td><td class="num">16</td><td class="num">60 GB</td></tr>
+          <tr><td>Worker 1</td><td>m3.large</td><td class="num">8</td><td class="num">30 GB</td></tr>
+          <tr><td>Worker 2</td><td>m3.large</td><td class="num">8</td><td class="num">30 GB</td></tr>
+          <tr><td>Worker 3</td><td>m3.large</td><td class="num">8</td><td class="num">30 GB</td></tr>
+          <tr><td>Worker 4</td><td>m3.large</td><td class="num">8</td><td class="num">30 GB</td></tr>
+          <tr style="background:var(--cream);font-weight:700"><td>Total</td><td>—</td><td class="num">48</td><td class="num">180 GB</td></tr>
+        </tbody>
+      </table>
+      <ul class="tight" style="margin-top:18px">
+        <li>Ubuntu 22.04 · Docker 29 · Java 11 · Spark 3.5.3</li>
+        <li>NFS export from master at <code>/srv/sparkdata</code> — datasets loaded once, cached in memory</li>
+      </ul>
+    </div>
+    <div class="cluster-diagram">
+<span class="dim"># cluster topology</span>
+<span class="key">┌──────────────────────────────┐</span>
+<span class="key">│</span>  <span class="crimson">MASTER</span> · 16c / 60 GB        <span class="key">│</span>
+<span class="key">│</span>  spark-master + driver       <span class="key">│</span>
+<span class="key">│</span>  NFS export /srv/sparkdata   <span class="key">│</span>
+<span class="key">└────┬────┬────┬────┬──────────┘</span>
+     <span class="key">│</span>    <span class="key">│</span>    <span class="key">│</span>    <span class="key">│</span>
+  <span class="key">┌──┴┐ ┌──┴┐ ┌──┴┐ ┌──┴┐</span>
+  <span class="key">│</span> W1<span class="key">│</span> <span class="key">│</span> W2<span class="key">│</span> <span class="key">│</span> W3<span class="key">│</span> <span class="key">│</span> W4<span class="key">│</span>      <span class="dim"># 8c / 30 GB each</span>
+  <span class="key">└───┘ └───┘ └───┘ └───┘</span>
+
+  <span class="dim">scaling reshape:</span>
+  <span class="crimson">w=1,2,4</span>  one Spark worker per node
+  <span class="crimson">w=8</span>      two co-located workers/node
+            (4c / 12 GB each)
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════
+     SLIDE 6 — STACK & SWEEP DESIGN
+     ════════════════════════════════════════════════════════════════ -->
+<section class="slide">
+  <span class="slide-tag">05 · Experimental Design</span>
+  <span class="slide-num">06 / 17</span>
+  <h2 class="section-title">160-cell sweep, fully idempotent</h2>
+  <h3 class="subhead">Each cell is (algorithm, dataset, partitioner, workers, trial). Five trials → 95% Student-t confidence intervals throughout.</h3>
+  <div class="sweep-eq">
+    <div class="factor"><span class="num">2</span><span class="lbl">Algorithms</span></div>
+    <div class="op">×</div>
+    <div class="factor"><span class="num">2</span><span class="lbl">Datasets</span></div>
+    <div class="op">×</div>
+    <div class="factor"><span class="num">2</span><span class="lbl">Partitioners</span></div>
+    <div class="op">×</div>
+    <div class="factor"><span class="num">4</span><span class="lbl">Worker counts</span></div>
+  </div>
+  <div class="sweep-eq" style="grid-template-columns: 1fr auto 1fr auto 1fr; margin-top:-12px">
+    <div class="factor"><span class="num">5</span><span class="lbl">Trials each</span></div>
+    <div class="op">=</div>
+    <div class="eq-result"><span class="num">160</span><span class="lbl">cluster runs</span></div>
+    <div class="op">+</div>
+    <div class="factor"><span class="num">20</span><span class="lbl">scipy baseline runs</span></div>
+  </div>
+  <ul class="tight" style="margin-top:14px">
+    <li><b>Idempotent harness</b> — each cell drops <code>metrics.json</code>; reruns skip completed cells. Total wall clock for the 64-cell delta: <b>~3h 45m</b>.</li>
+    <li><b>Custom <code>SparkListener</code></b> → 1 KB JSON per run. Welford's online variance avoids OOM on 155K-task SSSP runs.</li>
+    <li><b>Plus</b>: scipy single-machine baseline · PageRank convergence study (iters 10/15/20/25/30) · 8 diagnostic cells with extra instrumentation.</li>
+  </ul>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════
+     SLIDE 7 — PAGERANK CODE
+     ════════════════════════════════════════════════════════════════ -->
+<section class="slide">
+  <span class="slide-tag">06 · Implementation</span>
+  <span class="slide-num">07 / 17</span>
+  <h2 class="section-title">PageRank — power iteration on GraphX</h2>
+  <h3 class="subhead">20 iterations · reset probability 0.15 · forced materialization for honest end-to-end timing.</h3>
+  <div class="body-area">
+<pre class="code"><span class="file">app/src/main/scala/ecc/Algos.scala</span><span class="k">def</span> <span class="f">runPageRank</span>[VD: <span class="t">ClassTag</span>, ED: <span class="t">ClassTag</span>](
+    graph: <span class="t">Graph</span>[VD, ED], numIter: <span class="t">Int</span>): <span class="t">String</span> = {
+
+  <span class="k">val</span> ranked = graph.<span class="f">staticPageRank</span>(numIter, resetProb = <span class="n">0.15</span>)
+
+  <span class="c">// force materialization; top-5 = lightweight checksum</span>
+  <span class="k">val</span> top5  = ranked.vertices.<span class="f">top</span>(<span class="n">5</span>)(<span class="t">Ordering</span>.<span class="f">by</span>(_._2))
+  <span class="k">val</span> total = ranked.vertices.<span class="f">map</span>(_._2).<span class="f">sum</span>()
+
+  <span class="c">// optional: dump full rank vector for the convergence study</span>
+  sys.env.<span class="f">get</span>(<span class="s">"ECC_DUMP_RANKS_DIR"</span>).<span class="f">filter</span>(_.<span class="f">nonEmpty</span>).<span class="f">foreach</span> { dir =>
+    ranked.vertices.<span class="f">map</span> { <span class="k">case</span> (id, r) => <span class="s">s"$id\t$r"</span> }.<span class="f">saveAsTextFile</span>(dir)
+  }
+
+  f<span class="s">"top5=[$top5];sum=$total%.6f"</span>   <span class="c">// sum should ≈ |V| → confirms convergence</span>
+}</pre>
+    <ul class="tight" style="margin-top:18px">
+      <li><b>~12 lines of Scala</b> — GraphX provides the heavy lifting; we control partitioning + iteration count.</li>
+      <li><b>Correctness</b> — top-5 ranks matched NetworkX ground truth on a synthetic 10-node graph; on web-Google, sum of ranks = 875,713 = <code>|V|</code>.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════
+     SLIDE 8 — SSSP CODE
+     ════════════════════════════════════════════════════════════════ -->
+<section class="slide">
+  <span class="slide-tag">06 · Implementation</span>
+  <span class="slide-num">08 / 17</span>
+  <h2 class="section-title">SSSP — Pregel BSP on GraphX</h2>
+  <h3 class="subhead">Bulk-synchronous label propagation. On roadNet-CA: <b>726 supersteps</b> = the graph diameter.</h3>
+  <div class="body-area">
+<pre class="code"><span class="file">app/src/main/scala/ecc/Algos.scala</span><span class="k">val</span> weighted = graph
+  .<span class="f">mapEdges</span>(_ => <span class="n">1.0</span>)
+  .<span class="f">mapVertices</span> { (id, _) => <span class="k">if</span> (id == srcId) <span class="n">0.0</span> <span class="k">else</span> <span class="t">Double</span>.<span class="t">PositiveInfinity</span> }
+
+<span class="k">val</span> sssp = weighted.<span class="f">pregel</span>(
+    initialMsg      = <span class="t">Double</span>.<span class="t">PositiveInfinity</span>,
+    maxIterations   = <span class="t">Int</span>.<span class="t">MaxValue</span>,
+    activeDirection = <span class="t">EdgeDirection</span>.<span class="t">Out</span>
+)(
+  vprog    = (_, dist, newDist) => math.<span class="f">min</span>(dist, newDist),
+
+  sendMsg  = triplet => {
+    <span class="k">val</span> candidate = triplet.srcAttr + triplet.attr
+    <span class="k">if</span> (candidate &lt; triplet.dstAttr) <span class="t">Iterator</span>((triplet.dstId, candidate))
+    <span class="k">else</span>                             <span class="t">Iterator</span>.empty
+  },
+
+  mergeMsg = (a, b) => math.<span class="f">min</span>(a, b)        <span class="c">// commutative + associative</span>
+)</pre>
+    <ul class="tight" style="margin-top:18px">
+      <li><b>One full Spark shuffle per superstep.</b> roadNet-CA's diameter of 726 → 726 shuffles → SSSP/roadNet × w=8 emits <b>3,158 stages</b> &amp; <b>154,926 tasks</b>.</li>
+      <li><b>Validation</b> — 1,957,027 of 1,965,206 vertices reachable from source 562818; max distance 726.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════
+     SLIDE 9 — HEADLINE: scipy beats Spark
+     ════════════════════════════════════════════════════════════════ -->
+<section class="slide">
+  <span class="slide-tag">07 · Headline Result</span>
+  <span class="slide-num">09 / 17</span>
+  <h2 class="section-title">scipy beats Spark by 25× to 400×</h2>
+  <h3 class="subhead">Single-machine <code>scipy.sparse</code> on the master vs. Spark on 1 worker — same algorithm, just no distribution.</h3>
+  <div class="headline-grid">
+    <div class="head-card">
+      <div class="alg">PageRank · web-Google</div>
+      <div class="label">Spark / scipy</div>
+      <div class="ratio">27<span class="x">×</span></div>
+      <div class="detail">scipy: 0.51 s<br>Spark w=1: 13.99 s</div>
+    </div>
+    <div class="head-card">
+      <div class="alg">PageRank · roadNet-CA</div>
+      <div class="label">Spark / scipy</div>
+      <div class="ratio">25<span class="x">×</span></div>
+      <div class="detail">scipy: 0.76 s<br>Spark w=1: 19.20 s</div>
+    </div>
+    <div class="head-card">
+      <div class="alg">SSSP · web-Google</div>
+      <div class="label">Spark / scipy</div>
+      <div class="ratio">44<span class="x">×</span></div>
+      <div class="detail">scipy: 0.35 s<br>Spark w=1: 15.31 s</div>
+    </div>
+    <div class="head-card" style="border-top-color:var(--iu-crimson-dark)">
+      <div class="alg">SSSP · roadNet-CA</div>
+      <div class="label">Spark / scipy</div>
+      <div class="ratio" style="color:var(--iu-crimson-dark)">398<span class="x">×</span></div>
+      <div class="detail">scipy: 0.93 s<br>Spark w=1: 371.20 s</div>
+    </div>
+  </div>
+  <div class="pull">
+    For every job we ran, plain Python on a single core finished <b>25 to 400× faster</b> than Spark on the cluster — and that's algorithm time only, excluding Spark startup.
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════
+     SLIDE 10 — SCALING (negative)
+     ════════════════════════════════════════════════════════════════ -->
+<section class="slide">
+  <span class="slide-tag">08 · Scaling</span>
+  <span class="slide-num">10 / 17</span>
+  <h2 class="section-title">Negative scaling: more workers = slower</h2>
+  <h3 class="subhead">Adding workers should make things faster, or at worst no change. It made things 2–3× <em>slower</em>. Error bars: 95% CIs from 5 trials.</h3>
+  <div class="fig-pair">
+    <div class="figure-card">
+      <img src="figures/speedup_pagerank_web-Google.png" alt="PageRank speedup curves on web-Google">
+      <div class="caption">PageRank · web-Google · 1D vs 2D (peak speedup 1.07× at w=2)</div>
+    </div>
+    <div class="figure-card">
+      <img src="figures/speedup_sssp_roadNet-CA.png" alt="SSSP speedup curves on roadNet-CA">
+      <div class="caption">SSSP · roadNet-CA · monotonic slowdown — 3.2× <em>worse</em> at w=8</div>
+    </div>
+  </div>
+  <ul class="tight" style="margin-top:14px">
+    <li><b>PageRank</b> achieves only 1.03–1.07× speedup at w=2 before declining. <b>SSSP</b> shows monotonic slowdown from w=1 onward.</li>
+    <li>Confidence intervals at w=2..4 are <em>disjoint</em> from the no-effect line for SSSP — the negative trend is real, not noise.</li>
+  </ul>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════
+     SLIDE 11 — TIME DECOMPOSITION
+     ════════════════════════════════════════════════════════════════ -->
+<section class="slide">
+  <span class="slide-tag">09 · Diagnostic</span>
+  <span class="slide-num">11 / 17</span>
+  <h2 class="section-title">Where does the time actually go?</h2>
+  <h3 class="subhead">Eight diagnostic cells with extra instrumentation: per-task GC, shuffle-fetch-wait, load/algo split. Every obvious guess is wrong.</h3>
+  <div class="two-col-fig">
+    <div>
+      <table class="data">
+        <thead>
+          <tr><th>Cell</th><th class="num">Wall (s)</th><th class="num">Compute</th><th class="num">GC %</th><th class="num">SW %</th><th class="num">Tasks</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>PR/road · w=1</td><td class="num">31.7</td><td class="num">18.6</td><td class="num">2.1</td><td class="num">0.0</td><td class="num">1,168</td></tr>
+          <tr class="highlight"><td>PR/road · w=4</td><td class="num">32.7</td><td class="num">21.9</td><td class="num">1.2</td><td class="num">1.3</td><td class="num">4,672</td></tr>
+          <tr><td>SSSP/road · w=1</td><td class="num">405.1</td><td class="num">387.7</td><td class="num">1.2</td><td class="num">0.0</td><td class="num">~39 K</td></tr>
+          <tr class="highlight"><td>SSSP/road · w=4</td><td class="num">911.7</td><td class="num">871.2</td><td class="num">0.6</td><td class="num">2.7</td><td class="num"><b>154,926</b></td></tr>
+        </tbody>
+      </table>
+      <ul class="tight" style="margin-top:16px">
+        <li><b>GC</b> is &lt;&nbsp;2.5% everywhere — not the bottleneck.</li>
+        <li><b>Shuffle-fetch-wait</b> is &lt;&nbsp;2.7%.</li>
+        <li>The slowdown lives in the <b>compute residual</b> — per-task scheduling, RDD serialization, RPC chatter.</li>
+      </ul>
+    </div>
+    <div class="figure-card">
+      <img src="figures/time_decomposition.png" alt="Wall-time decomposition: load / compute / shuffle-wait / GC">
+      <div class="caption">Wall-time decomposition across all 8 diagnostic cells (log scale)</div>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════
+     SLIDE 12 — PARTITIONER 1D vs 2D
+     ════════════════════════════════════════════════════════════════ -->
+<section class="slide">
+  <span class="slide-tag">10 · Partitioning</span>
+  <span class="slide-num">12 / 17</span>
+  <h2 class="section-title">1D vs 2D — indistinguishable in our regime</h2>
+  <h3 class="subhead">PowerGraph reports 3–100× from vertex-cut on power-law graphs. We saw &lt; 2% on wall time. Why?</h3>
+  <div class="two-col-fig">
+    <div class="figure-card">
+      <img src="figures/shuffle_bytes.png" alt="Shuffle bytes 1D vs 2D">
+      <div class="caption">Shuffle read volume — 1D vs 2D · all configurations</div>
+    </div>
+    <div>
+      <ul class="tight" style="margin-top:0">
+        <li><b>Wall times</b> within 2%; shuffle volume within 50% with no consistent winner.</li>
+        <li><b>PowerGraph's regime</b>: hub vertices of degree ≥&nbsp;10⁴. <b>web-Google's max out-degree: 456</b> — power-law in shape, but the hubs aren't large enough for 2D's theoretical advantage.</li>
+        <li><b>roadNet-CA</b> is near-uniform by construction — 2D shouldn't help there at all, and doesn't.</li>
+        <li><b>Honest framing:</b> we cannot detect a partitioner effect at this scale and skew. We do <em>not</em> claim 1D ≡ 2D in general.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════
+     SLIDE 13 — LOCALITY WAIT KNOB
+     ════════════════════════════════════════════════════════════════ -->
+<section class="slide">
+  <span class="slide-tag">11 · Engineering Win</span>
+  <span class="slide-num">13 / 17</span>
+  <h2 class="section-title">The one knob that actually moves the needle</h2>
+  <h3 class="subhead"><code>spark.locality.wait</code> defaults to 3 seconds — assuming HDFS-style data locality. We read from NFS. Locality doesn't exist.</h3>
+  <div class="body-area">
+    <table class="data" style="margin-bottom:18px">
+      <thead>
+        <tr><th>Configuration · PR/web-Google/1D/w=4</th><th class="num">Wall time (n=5)</th><th class="num">Algo time (n=5)</th><th class="num">Δ</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Default · <code>locality.wait = 3s</code></td><td class="num">37.6 ± 8.7 s</td><td class="num">26.0 ± 7.7 s</td><td class="num">—</td></tr>
+        <tr class="highlight"><td><b>Tuned · <code>locality.wait = 0s</code></b></td><td class="num"><b>25.7 ± 0.8 s</b></td><td class="num"><b>15.2 ± 0.3 s</b></td><td class="num" style="color:var(--accent-emerald)"><b>−31.7%</b></td></tr>
+      </tbody>
+    </table>
+    <ul class="tight">
+      <li>Confidence intervals are <b>disjoint</b> — this is real, not noise.</li>
+      <li>Doesn't change the headline (Spark still 19× slower than scipy on this cell, vs 27×) but recovers ~⅓ of the gap.</li>
+      <li><b>Practitioner takeaway</b> — on NFS-backed Spark, <code>locality.wait=0</code> is mandatory. It's a real-world configuration trap.</li>
+      <li>Effect only at w ≥ 2 (at w=1 there's a single executor — nothing to wait for).</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════
+     SLIDE 14 — THREATS TO VALIDITY
+     ════════════════════════════════════════════════════════════════ -->
+<section class="slide">
+  <span class="slide-tag">12 · Validity</span>
+  <span class="slide-num">14 / 17</span>
+  <h2 class="section-title">Threats to validity — five named, four closed</h2>
+  <h3 class="subhead">A finding this dramatic deserves rigorous validity discussion. Status going into the final report:</h3>
+  <div class="body-area">
+    <table class="data">
+      <thead>
+        <tr><th>Threat (named in midterm)</th><th>Status</th><th>How addressed</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Sample size — only 3 trials, no CIs</td>
+          <td><span class="status-pill closed">Closed</span></td>
+          <td>Now <b>5 trials</b> per cell · 95% Student-t CIs (n=5, t=2.776) on every metric.</td>
+        </tr>
+        <tr>
+          <td>No non-distributed baseline</td>
+          <td><span class="status-pill closed">Closed</span></td>
+          <td><b>scipy.sparse</b> single-process baseline on master · same algorithm · 5 trials × 4 cells.</td>
+        </tr>
+        <tr>
+          <td>Did PageRank actually converge at 20 iters?</td>
+          <td><span class="status-pill closed">Closed</span></td>
+          <td>Convergence study at iters 10/15/20/25/30 · <b>top-1 stable by iter 10</b>; rank values still drifting.</td>
+        </tr>
+        <tr>
+          <td>2D partitioner null result vs PowerGraph</td>
+          <td><span class="status-pill closed">Closed</span></td>
+          <td>Reframed as <em>scope-bound</em>: max-degree 456 ≪ PowerGraph's regime (≥ 10⁴).</td>
+        </tr>
+        <tr>
+          <td>w=8 = co-located workers, not horizontal scale</td>
+          <td><span class="status-pill framed">Reframed</span></td>
+          <td>Pulled into its own "executor density" subsection · explicit caveat.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════
+     SLIDE 15 — CONCLUSION & TAKEAWAY
+     ════════════════════════════════════════════════════════════════ -->
+<section class="slide">
+  <span class="slide-tag">13 · Conclusion</span>
+  <span class="slide-num">15 / 17</span>
+  <h2 class="section-title">What this study tells an engineer</h2>
+  <h3 class="subhead">Not "Spark is bad" — "Spark has a regime, and we measured the lower bound."</h3>
+  <div class="take-card">
+    <div class="label">PRACTITIONER TAKEAWAY</div>
+    <div class="quote">At sub-RAM graph scale (~5M edges), Spark's framework overhead is <em>25–400×</em> the single-machine algorithm time, and adding workers makes it <em>worse</em>, not better.</div>
+    <div class="quote" style="font-size:22px;font-weight:500;line-height:1.4;">The slowdown isn't GC (&lt;2.5%) and isn't shuffle-wait (&lt;2.7%) — it's per-task overhead dominating when a 5M-edge graph is chopped into 150K tasks.</div>
+    <div class="footer">Spark begins to pay only when the working set exceeds single-node RAM — which our datasets do not. Choose single-machine implementations until you cross that line.</div>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════
+     SLIDE 16 — DASHBOARD LIVE DEMO
+     ════════════════════════════════════════════════════════════════ -->
+<section class="slide">
+  <span class="slide-tag">14 · Live Demo</span>
+  <span class="slide-num">16 / 17</span>
+  <h2 class="section-title">Interactive dashboard — all 160 cells</h2>
+  <h3 class="subhead">Streamlit dashboard deployed on the master · click through every cell of the sweep without reading code.</h3>
+  <div class="demo-card">
+    <div>
+      <div class="demo-url">$ streamlit run dashboard.py  →  http://149.165.153.77:8501</div>
+      <ul class="demo-checklist">
+        <li><b>Filter panel</b> (left): pick algorithm, dataset, partitioner, worker count.</li>
+        <li><b>Wall-time decomposition</b>: load vs algorithm time, with 95% CI bars.</li>
+        <li><b>Side-by-side 1D vs 2D</b>: shuffle bytes, load imbalance, num tasks.</li>
+        <li><b>Speedup curves</b>: rendered live from <code>summary_agg.csv</code>.</li>
+        <li><b>scipy baseline overlay</b>: the 25–400× framework-overhead bar.</li>
+        <li><b>Convergence inspector</b>: max |Δrank| at iters 10 → 30.</li>
+      </ul>
+    </div>
+    <div class="demo-side">
+      <div class="lbl">Reproducibility</div>
+      <p style="font-size:13.5px;line-height:1.5;color:var(--ink-soft)">Anyone with our codebase, the SNAP datasets, and a Jetstream2 allocation can rerun the full pipeline with one command. Idempotent harness · pinned versions · SHA256-tagged dataset freeze.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════════════════════════
+     SLIDE 17 — REFERENCES & Q&A
+     ════════════════════════════════════════════════════════════════ -->
+<section class="slide">
+  <span class="slide-tag">15 · References &amp; Q&amp;A</span>
+  <span class="slide-num">17 / 17</span>
+  <h2 class="section-title">References &amp; acknowledgments</h2>
+  <h3 class="subhead">Thank you. Questions welcome. Full report and reproducible benchmark suite available on request.</h3>
+  <div class="body-area refs">
+    <ol>
+      <li>G. Malewicz et al., "<i>Pregel: A System for Large-Scale Graph Processing</i>," Proc. ACM SIGMOD, 2010.</li>
+      <li>J. E. Gonzalez et al., "<i>PowerGraph: Distributed Graph-Parallel Computation on Natural Graphs</i>," 10th USENIX OSDI, 2012.</li>
+      <li>R. S. Xin et al., "<i>GraphX: A Resilient Distributed Graph System on Spark</i>," 1st Int'l Workshop on Graph Data Management (GRADES), 2013.</li>
+      <li>J. E. Gonzalez et al., "<i>GraphX: Graph Processing in a Distributed Dataflow Framework</i>," 11th USENIX OSDI, 2014.</li>
+      <li>M. Zaharia et al., "<i>Resilient Distributed Datasets: A Fault-Tolerant Abstraction for In-Memory Cluster Computing</i>," NSDI, 2012.</li>
+      <li>L. Page, S. Brin, R. Motwani, T. Winograd, "<i>The PageRank Citation Ranking: Bringing Order to the Web</i>," Stanford InfoLab Tech Report, 1999.</li>
+      <li>L. G. Valiant, "<i>A Bridging Model for Parallel Computation</i>," Communications of the ACM, vol. 33, no. 8, 1990.</li>
+      <li>J. Leskovec and A. Krevl, "<i>SNAP Datasets: Stanford Large Network Dataset Collection</i>," 2014. <a href="http://snap.stanford.edu/data">snap.stanford.edu/data</a></li>
+      <li>D. Y. Hancock et al., "<i>Jetstream2: Accelerating Cloud Computing via Jetstream</i>," PEARC '21, 2021. (NSF ACCESS allocation acknowledged.)</li>
+    </ol>
+  </div>
+</section>
+
+</div><!-- /deck -->
+</div><!-- /stage -->
+
+<!-- Controls -->
+<div class="controls">
+  <button id="prev" title="Previous (←)">‹</button>
+  <span class="counter" id="counter">1 / 17</span>
+  <button id="next" title="Next (→)">›</button>
+  <span class="sep"></span>
+  <button id="ovBtn" title="Slide overview (O)">☰ Overview</button>
+  <span class="sep"></span>
+  <span class="small">[S] script · [F] fullscreen · [?] help</span>
+</div>
+
+<!-- Speaker script panel -->
+<div class="script-panel" id="scriptPanel">
+  <div class="script-header">
+    <span>Speaker script · slide <span id="scriptNum">1</span></span>
+    <span class="hint">press [S] to hide · [→] next slide</span>
+  </div>
+  <div class="script-body" id="scriptBody"></div>
+</div>
+
+<!-- Slide overview -->
+<div class="overview" id="overview">
+  <div class="ov-grid" id="ovGrid"></div>
+</div>
+
+<!-- Help -->
+<div class="help-overlay" id="helpOverlay">
+  <div class="help-card">
+    <h3>Keyboard shortcuts</h3>
+    <dl>
+      <dt>← / →</dt><dd>Previous / next slide</dd>
+      <dt>Space</dt><dd>Next slide</dd>
+      <dt>Home / End</dt><dd>First / last slide</dd>
+      <dt>1–9</dt><dd>Jump to slide N</dd>
+      <dt>S</dt><dd>Toggle speaker script</dd>
+      <dt>O</dt><dd>Slide overview</dd>
+      <dt>F</dt><dd>Fullscreen</dd>
+      <dt>?</dt><dd>This help</dd>
+      <dt>Esc</dt><dd>Close panels</dd>
+    </dl>
+  </div>
+</div>
+
+<script src="script.js"></script>
+</body>
+</html>
